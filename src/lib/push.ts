@@ -1,6 +1,3 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import webPush from "web-push";
 
 export type PushSubscriptionRow = {
@@ -12,8 +9,27 @@ export type PushSubscriptionRow = {
 };
 
 let initialized = false;
-const STORE_DIR = path.join(process.cwd(), ".runtime-data");
-const STORE_PATH = path.join(STORE_DIR, "vocabulary-push-subscriptions.json");
+
+const TABLE = "vocabulary_push_subscriptions";
+
+function supabaseConfig() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      "Supabase not configured: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY",
+    );
+  }
+  return { base: `${url.replace(/\/$/, "")}/rest/v1`, key };
+}
+
+function supabaseHeaders(key: string) {
+  return {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+  };
+}
 
 export function initWebPush() {
   if (initialized) return;
@@ -23,37 +39,6 @@ export function initWebPush() {
     process.env.VAPID_PRIVATE_KEY!,
   );
   initialized = true;
-}
-
-async function ensureStoreDir() {
-  await mkdir(STORE_DIR, { recursive: true });
-}
-
-async function readStore(): Promise<PushSubscriptionRow[]> {
-  try {
-    const raw = await readFile(STORE_PATH, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((row): row is PushSubscriptionRow => {
-      return Boolean(
-        row &&
-          typeof row === "object" &&
-          typeof row.endpoint === "string" &&
-          typeof row.p256dh === "string" &&
-          typeof row.auth === "string",
-      );
-    });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-}
-
-async function writeStore(rows: PushSubscriptionRow[]) {
-  await ensureStoreDir();
-  await writeFile(STORE_PATH, JSON.stringify(rows, null, 2));
 }
 
 export async function sendPushNotification(sub: PushSubscriptionRow) {
@@ -73,25 +58,47 @@ export async function sendPushNotification(sub: PushSubscriptionRow) {
 }
 
 export async function getSubscriptions(): Promise<PushSubscriptionRow[]> {
-  return readStore();
+  const { base, key } = supabaseConfig();
+  const res = await fetch(
+    `${base}/${TABLE}?select=endpoint,p256dh,auth,timezone,created_at`,
+    { headers: supabaseHeaders(key), cache: "no-store" },
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to load subscriptions: ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as PushSubscriptionRow[];
 }
 
 export async function addSubscription(sub: PushSubscriptionRow) {
-  const subs = await readStore();
-  const idx = subs.findIndex((s) => s.endpoint === sub.endpoint);
-  const nextRow = {
+  const { base, key } = supabaseConfig();
+  const row: PushSubscriptionRow = {
     ...sub,
     created_at: sub.created_at ?? new Date().toISOString(),
   };
-  if (idx >= 0) {
-    subs[idx] = nextRow;
-  } else {
-    subs.push(nextRow);
+  // Upsert on the endpoint primary key.
+  const res = await fetch(`${base}/${TABLE}`, {
+    method: "POST",
+    headers: {
+      ...supabaseHeaders(key),
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to store subscription: ${res.status} ${await res.text()}`);
   }
-  await writeStore(subs);
 }
 
 export async function removeSubscription(endpoint: string) {
-  const subs = await readStore();
-  await writeStore(subs.filter((row) => row.endpoint !== endpoint));
+  const { base, key } = supabaseConfig();
+  const res = await fetch(
+    `${base}/${TABLE}?endpoint=eq.${encodeURIComponent(endpoint)}`,
+    {
+      method: "DELETE",
+      headers: { ...supabaseHeaders(key), Prefer: "return=minimal" },
+    },
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to remove subscription: ${res.status} ${await res.text()}`);
+  }
 }
