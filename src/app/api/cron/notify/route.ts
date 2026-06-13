@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
   }
 
   const now = new Date();
-  const subs = getSubscriptions();
+  const subs = await getSubscriptions();
   const sent: string[] = [];
   const failed: string[] = [];
 

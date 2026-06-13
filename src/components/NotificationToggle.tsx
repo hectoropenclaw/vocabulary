@@ -12,26 +12,29 @@ function urlBase64ToUint8Array(base64String: string) {
 }
 
 export function NotificationToggle() {
-  const [supported, setSupported] = useState(false);
-  const [permission, setPermission] = useState<NotificationPermission>("default");
+  const [supported] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  });
+  const [permission, setPermission] = useState<NotificationPermission>(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) return "default";
+    return Notification.permission;
+  });
   const [subscribed, setSubscribed] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    setSupported("serviceWorker" in navigator && "PushManager" in window && "Notification" in window);
-    setPermission(Notification.permission);
+    if (!supported) return;
 
-    // Check if already subscribed
-    navigator.serviceWorker.ready.then((reg) => {
-      reg.pushManager.getSubscription().then((sub) => {
+    navigator.serviceWorker
+      .register("/sw.js")
+      .then(() => navigator.serviceWorker.ready)
+      .then((reg) => reg.pushManager.getSubscription())
+      .then((sub) => {
         setSubscribed(!!sub);
-      });
-    });
-
-    // Register SW
-    navigator.serviceWorker.register("/sw.js");
-  }, []);
+      })
+      .catch(() => {});
+  }, [supported]);
 
   async function handleToggle() {
     if (loading) return;

@@ -1,3 +1,6 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import webPush from "web-push";
 
 export type PushSubscriptionRow = {
@@ -9,6 +12,8 @@ export type PushSubscriptionRow = {
 };
 
 let initialized = false;
+const STORE_DIR = path.join(process.cwd(), ".runtime-data");
+const STORE_PATH = path.join(STORE_DIR, "vocabulary-push-subscriptions.json");
 
 export function initWebPush() {
   if (initialized) return;
@@ -18,6 +23,37 @@ export function initWebPush() {
     process.env.VAPID_PRIVATE_KEY!,
   );
   initialized = true;
+}
+
+async function ensureStoreDir() {
+  await mkdir(STORE_DIR, { recursive: true });
+}
+
+async function readStore(): Promise<PushSubscriptionRow[]> {
+  try {
+    const raw = await readFile(STORE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((row): row is PushSubscriptionRow => {
+      return Boolean(
+        row &&
+          typeof row === "object" &&
+          typeof row.endpoint === "string" &&
+          typeof row.p256dh === "string" &&
+          typeof row.auth === "string",
+      );
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function writeStore(rows: PushSubscriptionRow[]) {
+  await ensureStoreDir();
+  await writeFile(STORE_PATH, JSON.stringify(rows, null, 2));
 }
 
 export async function sendPushNotification(sub: PushSubscriptionRow) {
@@ -36,32 +72,26 @@ export async function sendPushNotification(sub: PushSubscriptionRow) {
   return webPush.sendNotification(subscription, payload);
 }
 
-// In-memory store for subscriptions (use a DB for production scale)
-// Stored as a module-level singleton so it persists across requests in the same process
-declare global {
-  // eslint-disable-next-line no-var
-  var __vocabSubscriptions: PushSubscriptionRow[] | undefined;
+export async function getSubscriptions(): Promise<PushSubscriptionRow[]> {
+  return readStore();
 }
 
-export function getSubscriptions(): PushSubscriptionRow[] {
-  if (!global.__vocabSubscriptions) {
-    global.__vocabSubscriptions = [];
-  }
-  return global.__vocabSubscriptions;
-}
-
-export function addSubscription(sub: PushSubscriptionRow) {
-  const subs = getSubscriptions();
+export async function addSubscription(sub: PushSubscriptionRow) {
+  const subs = await readStore();
   const idx = subs.findIndex((s) => s.endpoint === sub.endpoint);
+  const nextRow = {
+    ...sub,
+    created_at: sub.created_at ?? new Date().toISOString(),
+  };
   if (idx >= 0) {
-    subs[idx] = sub;
+    subs[idx] = nextRow;
   } else {
-    subs.push(sub);
+    subs.push(nextRow);
   }
+  await writeStore(subs);
 }
 
-export function removeSubscription(endpoint: string) {
-  const subs = getSubscriptions();
-  const idx = subs.findIndex((s) => s.endpoint === endpoint);
-  if (idx >= 0) subs.splice(idx, 1);
+export async function removeSubscription(endpoint: string) {
+  const subs = await readStore();
+  await writeStore(subs.filter((row) => row.endpoint !== endpoint));
 }
