@@ -1,0 +1,21 @@
+name: Cron — Daily Vocabulary Push
+
+on:
+  schedule:
+    # Every hour 12:00–23:00 UTC — notify checks subscriber's local 9am timezone
+    - cron: "0 12-23 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send daily vocabulary push
+        run: |
+          curl -sf --max-time 30 \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            https://vocab-practice.launchpad.hconsulting.mx/api/cron/notify || true
